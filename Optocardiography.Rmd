@@ -1,0 +1,1021 @@
+---
+title: "R_optocardiography"
+author: "E. Alejandro Pardo-Sarmiento"
+date: "2025-07-09"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(pracma)
+library(rstatix)
+library(gridExtra)
+library(readxl)
+library(ggh4x)
+library(ggforce)
+library(patchwork) 
+library(signal)
+library(dplyr)
+library(writexl)
+library(RHRV)
+######################################################################################################################
+ #Folder with pixel intensity data
+
+setwd("C:/Users/jandr/OneDrive - Universidad del rosario/Heart_rate_speed_HRV/Datos/Videos freq. cardiaca/Results_optocardiography")
+
+ids_disponibles <- c(1, 2, 3, 5, 6, 7, 8, 10, 11, 12, 13, 19, 20, 21, 25, 27, 28, 30, 32)
+todos_los_resultados_movimiento <- list()  # Create an empty list to store results
+dir.create("Graphs_immbolized", showWarnings = FALSE)
+for (id in ids_disponibles) {
+  filename <- paste0("Reposo_", id, "_curva_contraccion.csv")
+  
+  if (!file.exists(filename)) {
+    cat("File not found for ID", id, "\n")
+    next
+  }
+  
+  data <- read_csv(filename)
+
+  data_long <- data %>%   
+    select(contains("Mean(ovalo")) %>%
+    mutate(t = seq(0, 20, length.out = n())) %>%
+    pivot_longer(-t, names_to = "ovalo", values_to = "value") %>%
+    mutate(
+      num_ovalo = as.numeric(str_extract(ovalo, "\\d+")),
+      t = t + (num_ovalo - 1) * 20 
+    )  
+
+  results <- data_long %>% arrange(t) %>% 
+    mutate(smoothed = sgolayfilt(value, p = 5, n = 25), trend = predict(loess(smoothed ~ t, span = 0.08), newdata = data.frame(t = t))) 
+
+  derivative <- c(NA, diff(results$smoothed))  # Smoothing and derivative
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from negative to positive (local minima)
+  valley_indices <- which(significant_changes == 2)
+  valley_values <- results$smoothed[valley_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+  threshold <- 0.99 * trend
+  valid_valleys <- valley_indices[valley_values < threshold[valley_indices]]
+  min_dist <- 18
+  values <- results$smoothed[valid_valleys]
+  filtered_valleys <- c()
+
+  if (length(valid_valleys) == 1) {
+    filtered_valleys <- valid_valleys
+  } else if (length(valid_valleys) > 1) {
+    current_group <- c(valid_valleys[1])
+    filtered_valleys <- c()
+    
+    for (i in 2:length(valid_valleys)) {
+      if ((valid_valleys[i] - valid_valleys[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_valleys[i])
+      } else {
+        min_valley <- current_group[which.min(results$smoothed[current_group])]
+        filtered_valleys <- c(filtered_valleys, min_valley)
+        current_group <- c(valid_valleys[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      min_valley <- current_group[which.min(results$smoothed[current_group])]
+      filtered_valleys <- c(filtered_valleys, min_valley)
+    }
+  }
+
+  local_valley_threshold <- trend[filtered_valleys]
+  filtered_valley_values <- results$smoothed[filtered_valleys]
+  valley_trend_filter <- filtered_valley_values < local_valley_threshold
+  filtered_valleys <- filtered_valleys[valley_trend_filter]
+
+  if (length(filtered_valleys) > 0) {
+    final_valleys <- tibble(
+      time = results$t[filtered_valleys],
+      value = results$smoothed[filtered_valleys]
+    )
+  } else {
+    final_valleys <- NULL
+  }
+
+  derivative <- c(NA, diff(results$smoothed))
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from positive to negative (local maxima)
+  peak_indices <- which(significant_changes == -2)
+  peak_values <- results$smoothed[peak_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+
+  threshold <- 1.01 * trend
+  local_threshold <- threshold[peak_indices]
+
+  valid_peaks <- peak_indices[peak_values > local_threshold]
+  min_dist <- 18
+  values <- results$smoothed[valid_peaks]
+
+  filtered_peaks <- c()
+
+  if (length(valid_peaks) == 1) {
+    filtered_peaks <- valid_peaks
+  } else if (length(valid_peaks) > 1) {
+    current_group <- c(valid_peaks[1])
+    filtered_peaks <- c()
+    
+    for (i in 2:length(valid_peaks)) {
+      if ((valid_peaks[i] - valid_peaks[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_peaks[i])
+      } else {
+        max_peak <- current_group[which.max(results$smoothed[current_group])]
+        filtered_peaks <- c(filtered_peaks, max_peak)
+        current_group <- c(valid_peaks[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      max_peak <- current_group[which.max(results$smoothed[current_group])]
+      filtered_peaks <- c(filtered_peaks, max_peak)
+    }
+  }
+
+  local_threshold_filtered <- trend[filtered_peaks]
+  filtered_values <- results$smoothed[filtered_peaks]
+  trend_filter <- filtered_values > local_threshold_filtered
+  filtered_peaks <- filtered_peaks[trend_filter]
+
+  if (length(filtered_peaks) > 0) {
+    final_peaks <- tibble(
+      time = results$t[filtered_peaks],
+      value = results$smoothed[filtered_peaks]
+    )
+  } else {
+    final_peaks <- NULL
+  }
+
+  data_smoothed <- bind_rows(results)
+
+  cat("Processed ID", id, "\n")
+
+  breaks <- seq(0, 80, by = 20)
+  data_smoothed$interval_20s <- cut(
+    data_smoothed$t,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_valleys$interval_20s <- cut(
+    final_valleys$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_peaks$interval_20s <- cut(
+    final_peaks$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  plot_individual <- ggplot(data_smoothed, aes(x = t)) +
+    geom_line(aes(y = value, color = "Raw signal"), size = 0.8) +
+    geom_line(aes(y = smoothed, color = "Smoothed signal"), size = 0.9) +
+    geom_line(aes(y = trend, color = "Trend", linetype = "Trend"), size = 1) +
+    geom_point(data = final_valleys, aes(x = time, y = value, color = "Valleys", shape = "Valleys"), size = 2) +
+    geom_point(data = final_peaks, aes(x = time, y = value, color = "Peaks", shape = "Peaks"), size = 2) +
+
+    labs(title = paste("Signals and detected peaks - ID", id),
+         x = "Time (s)", y = "Intensity", color = "", linetype = "", shape = "") +
+
+    facet_wrap(~interval_20s, scales = "free_x") +
+
+    scale_color_manual(values = c(
+      "Raw signal" = "gray70",
+      "Smoothed signal" = "blue",
+      "Trend" = "green",
+      "Valleys" = "orange",
+      "Peaks" = "red"
+    )) +
+    scale_linetype_manual(values = c("Trend" = "dashed")) +
+    scale_shape_manual(values = c("Valleys" = 16, "Peaks" = 16)) +
+
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      strip.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(hjust = 0.5, size = 16, face = "bold", color = "black"),
+      axis.title = element_text(size = 14, color = "black"),
+      axis.text = element_text(size = 12, color = "black"),
+      strip.text = element_text(color = "black"),
+      legend.text = element_text(color = "black")
+    )
+
+  ggsave(filename = paste0("Graphs_immbolized/Immbolized", id, ".png"),
+         plot = plot_individual, width = 12, height = 8, dpi = 300)
+
+  todos_los_resultados_movimiento[[as.character(id)]] <- list(
+    data_suavizado = data_smoothed %>% mutate(ID = id),
+    valles_finales = final_valleys %>% mutate(ID = id),
+    picos_finales = final_peaks %>% mutate(ID = id)
+  )
+}
+
+data_suavizado_all <- map_dfr(todos_los_resultados_movimiento, "data_suavizado")
+all_rep_valleys <- map_dfr(todos_los_resultados_movimiento, "valles_finales")
+picos_all_rep <- map_dfr(todos_los_resultados_movimiento, "picos_finales")
+
+# Merge all results
+View(all_rep_valleys)
+
+
+##########################################################################################################################
+
+setwd("C:/Users/jandr/OneDrive - Universidad del rosario/Heart_rate_speed_HRV/Datos/Videos freq. cardiaca/Results_optocardiography")
+
+ids_disponibles <- c(1, 2, 5, 6, 7, 8, 11, 12, 13, 19, 20, 21, 25, 27, 28, 30, 32)
+todos_los_resultados_movimiento <- list()  # Create an empty list to store results
+dir.create("Graficas_ID_Movimiento_fft_r", showWarnings = FALSE)
+for (id in ids_disponibles) {
+  filename <- paste0("Movimiento_", id, "_curva_contraccion.csv")
+  
+  if (!file.exists(filename)) {
+    cat("File not found for ID", id, "\n")
+    next
+  }
+  
+  data <- read_csv(filename)
+
+  data_long <- data %>%   
+    select(contains("Mean(ovalo")) %>%
+    mutate(t = seq(0, 20, length.out = n())) %>%
+    pivot_longer(-t, names_to = "ovalo", values_to = "value") %>%
+    mutate(
+      num_ovalo = as.numeric(str_extract(ovalo, "\\d+")),
+      t = t + (num_ovalo - 1) * 20 
+    )  
+
+  results <- data_long %>% arrange(t) %>% 
+    mutate(smoothed = sgolayfilt(value, p = 5, n = 25), trend = predict(loess(smoothed ~ t, span = 0.08), newdata = data.frame(t = t))) 
+
+  derivative <- c(NA, diff(results$smoothed))  # Smoothing and derivative
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from negative to positive (local minima)
+  valley_indices <- which(significant_changes == 2)
+  valley_values <- results$smoothed[valley_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+  threshold <- 0.99 * trend
+  valid_valleys <- valley_indices[valley_values < threshold[valley_indices]]
+  min_dist <- 16
+  values <- results$smoothed[valid_valleys]
+  filtered_valleys <- c()
+
+  if (length(valid_valleys) == 1) {
+    filtered_valleys <- valid_valleys
+  } else if (length(valid_valleys) > 1) {
+    current_group <- c(valid_valleys[1])
+    filtered_valleys <- c()
+    
+    for (i in 2:length(valid_valleys)) {
+      if ((valid_valleys[i] - valid_valleys[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_valleys[i])
+      } else {
+        min_valley <- current_group[which.min(results$smoothed[current_group])]
+        filtered_valleys <- c(filtered_valleys, min_valley)
+        current_group <- c(valid_valleys[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      min_valley <- current_group[which.min(results$smoothed[current_group])]
+      filtered_valleys <- c(filtered_valleys, min_valley)
+    }
+  }
+
+  local_valley_threshold <- trend[filtered_valleys]
+  filtered_valley_values <- results$smoothed[filtered_valleys]
+  valley_trend_filter <- filtered_valley_values < local_valley_threshold
+  filtered_valleys <- filtered_valleys[valley_trend_filter]
+
+  if (length(filtered_valleys) > 0) {
+    final_valleys <- tibble(
+      time = results$t[filtered_valleys],
+      value = results$smoothed[filtered_valleys]
+    )
+  } else {
+    final_valleys <- NULL
+  }
+
+  derivative <- c(NA, diff(results$smoothed))
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from positive to negative (local maxima)
+  peak_indices <- which(significant_changes == -2)
+  peak_values <- results$smoothed[peak_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+
+  threshold <- 1.01* trend
+  local_threshold <- threshold[peak_indices]
+
+  valid_peaks <- peak_indices[peak_values > local_threshold]
+  min_dist <- 17
+  values <- results$smoothed[valid_peaks]
+
+  filtered_peaks <- c()
+
+  if (length(valid_peaks) == 1) {
+    filtered_peaks <- valid_peaks
+  } else if (length(valid_peaks) > 1) {
+    current_group <- c(valid_peaks[1])
+    filtered_peaks <- c()
+    
+    for (i in 2:length(valid_peaks)) {
+      if ((valid_peaks[i] - valid_peaks[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_peaks[i])
+      } else {
+        max_peak <- current_group[which.max(results$smoothed[current_group])]
+        filtered_peaks <- c(filtered_peaks, max_peak)
+        current_group <- c(valid_peaks[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      max_peak <- current_group[which.max(results$smoothed[current_group])]
+      filtered_peaks <- c(filtered_peaks, max_peak)
+    }
+  }
+
+  local_threshold_filtered <- trend[filtered_peaks]
+  filtered_values <- results$smoothed[filtered_peaks]
+  trend_filter <- filtered_values > local_threshold_filtered
+  filtered_peaks <- filtered_peaks[trend_filter]
+
+  if (length(filtered_peaks) > 0) {
+    final_peaks <- tibble(
+      time = results$t[filtered_peaks],
+      value = results$smoothed[filtered_peaks]
+    )
+  } else {
+    final_peaks <- NULL
+  }
+
+  data_smoothed <- bind_rows(results)
+
+  cat("Processed ID", id, "\n")
+
+  breaks <- seq(0, 80, by = 20)
+  data_smoothed$interval_20s <- cut(
+    data_smoothed$t,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_valleys$interval_20s <- cut(
+    final_valleys$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_peaks$interval_20s <- cut(
+    final_peaks$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  plot_individual <- ggplot(data_smoothed, aes(x = t)) +
+    geom_line(aes(y = value, color = "Raw signal"), size = 0.8) +
+    geom_line(aes(y = smoothed, color = "Smoothed signal"), size = 0.9) +
+    geom_line(aes(y = trend, color = "Trend", linetype = "Trend"), size = 1) +
+    geom_point(data = final_valleys, aes(x = time, y = value, color = "Valleys", shape = "Valleys"), size = 2) +
+    geom_point(data = final_peaks, aes(x = time, y = value, color = "Peaks", shape = "Peaks"), size = 2) +
+
+    labs(title = paste("Signals and detected peaks - ID", id),
+         x = "Time (s)", y = "Intensity", color = "", linetype = "", shape = "") +
+
+    facet_wrap(~interval_20s, scales = "free_x") +
+
+    scale_color_manual(values = c(
+      "Raw signal" = "gray70",
+      "Smoothed signal" = "blue",
+      "Trend" = "green",
+      "Valleys" = "orange",
+      "Peaks" = "red"
+    )) +
+    scale_linetype_manual(values = c("Trend" = "dashed")) +
+    scale_shape_manual(values = c("Valleys" = 16, "Peaks" = 16)) +
+
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      strip.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(hjust = 0.5, size = 16, face = "bold", color = "black"),
+      axis.title = element_text(size = 14, color = "black"),
+      axis.text = element_text(size = 12, color = "black"),
+      strip.text = element_text(color = "black"),
+      legend.text = element_text(color = "black")
+    )
+
+  ggsave(filename = paste0("Graficas_ID_Movimiento_fft_r/Grafica_ID_Movimiento_fft", id, ".png"),
+         plot = plot_individual, width = 12, height = 8, dpi = 300)
+
+  todos_los_resultados_movimiento[[as.character(id)]] <- list(
+    data_suavizado = data_smoothed %>% mutate(ID = id),
+    valles_finales = final_valleys %>% mutate(ID = id),
+    picos_finales = final_peaks %>% mutate(ID = id)
+  )
+}
+
+data_suavizado_all <- map_dfr(todos_los_resultados_movimiento, "data_suavizado")
+valles_all_mov <- map_dfr(todos_los_resultados_movimiento, "valles_finales")
+picos_all_mov <- map_dfr(todos_los_resultados_movimiento, "picos_finales")
+
+# Merge all results
+todos_los_resultados_movimiento
+View(valles_all_mov)
+View(valles_all)
+
+###########################################################################################################################################
+########### min dist 17 para  y 18 para el resto
+
+setwd("C:/Users/jandr/OneDrive - Universidad del rosario/Heart_rate_speed_HRV/Datos/Videos freq. cardiaca/Results_optocardiography")
+
+ids_disponibles <- 10
+resultados_10_movimiento <- list()  # Create an empty list to store results
+dir.create("Graficas_ID_Movimiento_fft_r", showWarnings = FALSE)
+for (id in ids_disponibles) {
+  filename <- paste0("Movimiento_", id, "_curva_contraccion.csv")
+  
+  if (!file.exists(filename)) {
+    cat("File not found for ID", id, "\n")
+    next
+  }
+  
+  data <- read_csv(filename)
+
+  data_long <- data %>%   
+    select(contains("Mean(ovalo")) %>%
+    mutate(t = seq(0, 20, length.out = n())) %>%
+    pivot_longer(-t, names_to = "ovalo", values_to = "value") %>%
+    mutate(
+      num_ovalo = as.numeric(str_extract(ovalo, "\\d+")),
+      t = t + (num_ovalo - 1) * 20 
+    )  
+
+  results <- data_long %>% arrange(t) %>% 
+    mutate(smoothed = sgolayfilt(value, p = 5, n = 25), trend = predict(loess(smoothed ~ t, span = 0.08), newdata = data.frame(t = t))) 
+
+  derivative <- c(NA, diff(results$smoothed))  # Smoothing and derivative
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from negative to positive (local minima)
+  valley_indices <- which(significant_changes == 2)
+  valley_values <- results$smoothed[valley_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+  threshold <- 0.99 * trend
+  valid_valleys <- valley_indices[valley_values < threshold[valley_indices]]
+  min_dist <- 19
+  values <- results$smoothed[valid_valleys]
+  filtered_valleys <- c()
+
+  if (length(valid_valleys) == 1) {
+    filtered_valleys <- valid_valleys
+  } else if (length(valid_valleys) > 1) {
+    current_group <- c(valid_valleys[1])
+    filtered_valleys <- c()
+    
+    for (i in 2:length(valid_valleys)) {
+      if ((valid_valleys[i] - valid_valleys[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_valleys[i])
+      } else {
+        min_valley <- current_group[which.min(results$smoothed[current_group])]
+        filtered_valleys <- c(filtered_valleys, min_valley)
+        current_group <- c(valid_valleys[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      min_valley <- current_group[which.min(results$smoothed[current_group])]
+      filtered_valleys <- c(filtered_valleys, min_valley)
+    }
+  }
+
+  local_valley_threshold <- trend[filtered_valleys]
+  filtered_valley_values <- results$smoothed[filtered_valleys]
+  valley_trend_filter <- filtered_valley_values < local_valley_threshold
+  filtered_valleys <- filtered_valleys[valley_trend_filter]
+
+  if (length(filtered_valleys) > 0) {
+    final_valleys <- tibble(
+      time = results$t[filtered_valleys],
+      value = results$smoothed[filtered_valleys]
+    )
+  } else {
+    final_valleys <- NULL
+  }
+
+  derivative <- c(NA, diff(results$smoothed))
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from positive to negative (local maxima)
+  peak_indices <- which(significant_changes == -2)
+  peak_values <- results$smoothed[peak_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+
+  threshold <- 1.01 * trend
+  local_threshold <- threshold[peak_indices]
+
+  valid_peaks <- peak_indices[peak_values > local_threshold]
+  min_dist <- 17
+  values <- results$smoothed[valid_peaks]
+
+  filtered_peaks <- c()
+
+  if (length(valid_peaks) == 1) {
+    filtered_peaks <- valid_peaks
+  } else if (length(valid_peaks) > 1) {
+    current_group <- c(valid_peaks[1])
+    filtered_peaks <- c()
+    
+    for (i in 2:length(valid_peaks)) {
+      if ((valid_peaks[i] - valid_peaks[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_peaks[i])
+      } else {
+        max_peak <- current_group[which.max(results$smoothed[current_group])]
+        filtered_peaks <- c(filtered_peaks, max_peak)
+        current_group <- c(valid_peaks[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      max_peak <- current_group[which.max(results$smoothed[current_group])]
+      filtered_peaks <- c(filtered_peaks, max_peak)
+    }
+  }
+
+  local_threshold_filtered <- trend[filtered_peaks]
+  filtered_values <- results$smoothed[filtered_peaks]
+  trend_filter <- filtered_values > local_threshold_filtered
+  filtered_peaks <- filtered_peaks[trend_filter]
+
+  if (length(filtered_peaks) > 0) {
+    final_peaks <- tibble(
+      time = results$t[filtered_peaks],
+      value = results$smoothed[filtered_peaks]
+    )
+  } else {
+    final_peaks <- NULL
+  }
+
+  data_smoothed <- bind_rows(results)
+
+  cat("Processed ID", id, "\n")
+
+  breaks <- seq(0, 80, by = 20)
+  data_smoothed$interval_20s <- cut(
+    data_smoothed$t,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_valleys$interval_20s <- cut(
+    final_valleys$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_peaks$interval_20s <- cut(
+    final_peaks$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  plot_individual <- ggplot(data_smoothed, aes(x = t)) +
+    geom_line(aes(y = value, color = "Raw signal"), size = 0.8) +
+    geom_line(aes(y = smoothed, color = "Smoothed signal"), size = 0.9) +
+    geom_line(aes(y = trend, color = "Trend", linetype = "Trend"), size = 1) +
+    geom_point(data = final_valleys, aes(x = time, y = value, color = "Valleys", shape = "Valleys"), size = 2) +
+    geom_point(data = final_peaks, aes(x = time, y = value, color = "Peaks", shape = "Peaks"), size = 2) +
+
+    labs(title = paste("Signals and detected peaks - ID", id),
+         x = "Time (s)", y = "Intensity", color = "", linetype = "", shape = "") +
+
+    facet_wrap(~interval_20s, scales = "free_x") +
+
+    scale_color_manual(values = c(
+      "Raw signal" = "gray70",
+      "Smoothed signal" = "blue",
+      "Trend" = "green",
+      "Valleys" = "orange",
+      "Peaks" = "red"
+    )) +
+    scale_linetype_manual(values = c("Trend" = "dashed")) +
+    scale_shape_manual(values = c("Valleys" = 16, "Peaks" = 16)) +
+
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      strip.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(hjust = 0.5, size = 16, face = "bold", color = "black"),
+      axis.title = element_text(size = 14, color = "black"),
+      axis.text = element_text(size = 12, color = "black"),
+      strip.text = element_text(color = "black"),
+      legend.text = element_text(color = "black")
+    )
+
+  ggsave(filename = paste0("Graficas_ID_Movimiento_fft_r/Grafica_ID_Movimiento_fft", id, ".png"),
+         plot = plot_individual, width = 12, height = 8, dpi = 300)
+
+  resultados_10_movimiento[[as.character(id)]] <- list(
+    data_suavizado = data_smoothed %>% mutate(ID = id),
+    valles_finales = final_valleys %>% mutate(ID = id),
+    picos_finales = final_peaks %>% mutate(ID = id)
+  )
+}
+
+data_suavizado_10 <- map_dfr(resultados_10_movimiento, "data_suavizado")
+valles_10_mov <- map_dfr(resultados_10_movimiento, "valles_finales")
+picos_10_mov <- map_dfr(resultados_10_movimiento, "picos_finales")
+
+# Merge all results
+todos_los_resultados_movimiento
+View(valles_10_mov)
+
+##############################################################################3
+
+setwd("C:/Users/jandr/OneDrive - Universidad del rosario/Heart_rate_speed_HRV/Datos/Videos freq. cardiaca/Results_optocardiography")
+
+ids_disponibles <- 3
+resultados_3_movimiento <- list()  # Create an empty list to store results
+dir.create("Graficas_ID_Movimiento_fft_r", showWarnings = FALSE)
+for (id in ids_disponibles) {
+  filename <- paste0("Movimiento_", id, "_curva_contraccion.csv")
+  
+  if (!file.exists(filename)) {
+    cat("File not found for ID", id, "\n")
+    next
+  }
+  
+  data <- read_csv(filename)
+
+  data_long <- data %>%   
+    select(contains("Mean(ovalo")) %>%
+    mutate(t = seq(0, 20, length.out = n())) %>%
+    pivot_longer(-t, names_to = "ovalo", values_to = "value") %>%
+    mutate(
+      num_ovalo = as.numeric(str_extract(ovalo, "\\d+")),
+      t = t + (num_ovalo - 1) * 20 
+    )  
+
+  results <- data_long %>% arrange(t) %>% 
+    mutate(smoothed = sgolayfilt(value, p = 5, n = 25), trend = predict(loess(smoothed ~ t, span = 0.08), newdata = data.frame(t = t))) 
+
+  derivative <- c(NA, diff(results$smoothed))  # Smoothing and derivative
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from negative to positive (local minima)
+  valley_indices <- which(significant_changes == 2)
+  valley_values <- results$smoothed[valley_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+  threshold <- 0.98 * trend
+  valid_valleys <- valley_indices[valley_values < threshold[valley_indices]]
+  min_dist <- 19
+  values <- results$smoothed[valid_valleys]
+  filtered_valleys <- c()
+
+  if (length(valid_valleys) == 1) {
+    filtered_valleys <- valid_valleys
+  } else if (length(valid_valleys) > 1) {
+    current_group <- c(valid_valleys[1])
+    filtered_valleys <- c()
+    
+    for (i in 2:length(valid_valleys)) {
+      if ((valid_valleys[i] - valid_valleys[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_valleys[i])
+      } else {
+        min_valley <- current_group[which.min(results$smoothed[current_group])]
+        filtered_valleys <- c(filtered_valleys, min_valley)
+        current_group <- c(valid_valleys[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      min_valley <- current_group[which.min(results$smoothed[current_group])]
+      filtered_valleys <- c(filtered_valleys, min_valley)
+    }
+  }
+
+  local_valley_threshold <- trend[filtered_valleys]
+  filtered_valley_values <- results$smoothed[filtered_valleys]
+  valley_trend_filter <- filtered_valley_values < local_valley_threshold
+  filtered_valleys <- filtered_valleys[valley_trend_filter]
+
+  if (length(filtered_valleys) > 0) {
+    final_valleys <- tibble(
+      time = results$t[filtered_valleys],
+      value = results$smoothed[filtered_valleys]
+    )
+  } else {
+    final_valleys <- NULL
+  }
+
+  derivative <- c(NA, diff(results$smoothed))
+  changes <- sign(derivative)
+  significant_changes <- c(NA, diff(changes))
+
+  # Indices where it changes from positive to negative (local maxima)
+  peak_indices <- which(significant_changes == -2)
+  peak_values <- results$smoothed[peak_indices]
+
+  trend_fit <- loess(smoothed ~ t, data = results, span = 0.08)
+  trend <- predict(trend_fit, newdata = data.frame(t = results$t))
+
+  threshold <- 1.01 * trend
+  local_threshold <- threshold[peak_indices]
+
+  valid_peaks <- peak_indices[peak_values > local_threshold]
+  min_dist <- 17
+  values <- results$smoothed[valid_peaks]
+
+  filtered_peaks <- c()
+
+  if (length(valid_peaks) == 1) {
+    filtered_peaks <- valid_peaks
+  } else if (length(valid_peaks) > 1) {
+    current_group <- c(valid_peaks[1])
+    filtered_peaks <- c()
+    
+    for (i in 2:length(valid_peaks)) {
+      if ((valid_peaks[i] - valid_peaks[i - 1]) <= min_dist) {
+        current_group <- c(current_group, valid_peaks[i])
+      } else {
+        max_peak <- current_group[which.max(results$smoothed[current_group])]
+        filtered_peaks <- c(filtered_peaks, max_peak)
+        current_group <- c(valid_peaks[i])
+      }
+    }
+    
+    if (length(current_group) > 0) {
+      max_peak <- current_group[which.max(results$smoothed[current_group])]
+      filtered_peaks <- c(filtered_peaks, max_peak)
+    }
+  }
+
+  local_threshold_filtered <- trend[filtered_peaks]
+  filtered_values <- results$smoothed[filtered_peaks]
+  trend_filter <- filtered_values > local_threshold_filtered
+  filtered_peaks <- filtered_peaks[trend_filter]
+
+  if (length(filtered_peaks) > 0) {
+    final_peaks <- tibble(
+      time = results$t[filtered_peaks],
+      value = results$smoothed[filtered_peaks]
+    )
+  } else {
+    final_peaks <- NULL
+  }
+
+  data_smoothed <- bind_rows(results)
+
+  cat("Processed ID", id, "\n")
+
+  breaks <- seq(0, 80, by = 20)
+  data_smoothed$interval_20s <- cut(
+    data_smoothed$t,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_valleys$interval_20s <- cut(
+    final_valleys$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  final_peaks$interval_20s <- cut(
+    final_peaks$time,
+    breaks = breaks,
+    right = TRUE,
+    include.lowest = TRUE
+  )
+
+  plot_individual <- ggplot(data_smoothed, aes(x = t)) +
+    geom_line(aes(y = value, color = "Raw signal"), size = 0.8) +
+    geom_line(aes(y = smoothed, color = "Smoothed signal"), size = 0.9) +
+    geom_line(aes(y = trend, color = "Trend", linetype = "Trend"), size = 1) +
+    geom_point(data = final_valleys, aes(x = time, y = value, color = "Valleys", shape = "Valleys"), size = 2) +
+    geom_point(data = final_peaks, aes(x = time, y = value, color = "Peaks", shape = "Peaks"), size = 2) +
+
+    labs(title = paste("Signals and detected peaks - ID", id),
+         x = "Time (s)", y = "Intensity", color = "", linetype = "", shape = "") +
+
+    facet_wrap(~interval_20s, scales = "free_x") +
+
+    scale_color_manual(values = c(
+      "Raw signal" = "gray70",
+      "Smoothed signal" = "blue",
+      "Trend" = "green",
+      "Valleys" = "orange",
+      "Peaks" = "red"
+    )) +
+    scale_linetype_manual(values = c("Trend" = "dashed")) +
+    scale_shape_manual(values = c("Valleys" = 16, "Peaks" = 16)) +
+
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      strip.background = element_rect(fill = "white", color = NA),
+      plot.title = element_text(hjust = 0.5, size = 16, face = "bold", color = "black"),
+      axis.title = element_text(size = 14, color = "black"),
+      axis.text = element_text(size = 12, color = "black"),
+      strip.text = element_text(color = "black"),
+      legend.text = element_text(color = "black")
+    )
+
+  ggsave(filename = paste0("Graficas_ID_Movimiento_fft_r/Grafica_ID_Movimiento_fft", id, ".png"),
+         plot = plot_individual, width = 12, height = 8, dpi = 300)
+
+  resultados_3_movimiento[[as.character(id)]] <- list(
+    data_suavizado = data_smoothed %>% mutate(ID = id),
+    valles_finales = final_valleys %>% mutate(ID = id),
+    picos_finales = final_peaks %>% mutate(ID = id)
+  )
+}
+
+data_suavizado_3 <- map_dfr(resultados_3_movimiento, "data_suavizado")
+valles_3_mov <- map_dfr(resultados_3_movimiento, "valles_finales")
+picos_3_mov <- map_dfr(resultados_3_movimiento, "picos_finales")
+
+# Merge all results
+todos_los_resultados_movimiento
+View(valles_3_mov)
+
+all_mov_valleys <- rbind(valles_all_mov, valles_3_mov, valles_10_mov)
+view(all_mov_valleys)
+
+all_rep_valleys <- all_rep_valleys %>% 
+  mutate(estado = "immobilized")
+
+all_mov_valleys <- all_mov_valleys %>% 
+  mutate(estado = "Moving")
+
+all_valleys_complete <- bind_rows(all_rep_valleys, all_mov_valleys)
+view(all_valleys_complete)
+write_xlsx(all_valleys_complete, "all_valleys_complete.xlsx")
+```
+
+```{r}
+
+
+extract_metrics_snail_rep <- function(hrv_obj, id) {
+  if (!is.null(hrv_obj$TimeAnalysis[[1]])) {
+    ta <- hrv_obj$TimeAnalysis[[1]]  
+    fa <- hrv_obj$FreqAnalysis[[1]]  
+    data.frame(
+      ID = id,
+      MeanHR_rep = mean(hrv_obj$HR, na.rm = TRUE),
+      LF_rep = mean(fa$LF),
+      HF_rep = mean(fa$HF),
+      LFHF_rep = mean(fa$LFHF),
+      SDNN_rep = ta$SDNN,
+      RMSSD_rep = ta$rMSSD,
+      pNN50_rep = ta$pNN50,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      ID = id,
+      MeanHR_rep = NA,
+      LF_rep = NA,
+      HF_rep = NA,
+      LFHF_rep = NA,
+      SDNN_rep = NA,
+      RMSSD_rep = NA,
+      pNN50_rep = NA,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+grouped <- all_rep_valleys %>% group_by(ID)
+data_by_snail<- grouped %>% group_split()
+Real_IDs <- grouped %>% group_keys() %>% pull(1)
+Results_HRV_rep <- lapply(data_by_snail, function(df_snail) {
+  HRV <- CreateHRVData()
+  HRV <- LoadBeatVector(HRV, df_snail$time)
+  HRV <- BuildNIHR(HRV)
+  HRV <- InterpolateNIHR(HRV)
+  HRV <- CreateTimeAnalysis(HRV, size = 80, interval = 7.8125)
+  HRV <- CreateFreqAnalysis(HRV)
+  HRV <- CalculatePowerBand(HRV, size = 80, shift = 80, type = "wavelet" )
+  return(HRV)
+})
+names(Results_HRV_rep) <- as.character(Real_IDs)
+HRV_metrics_rep <- imap_dfr(Results_HRV_rep, ~ extract_metrics_snail_rep(.x, .y))
+view(HRV_metrics_rep)
+library(RHRV)
+
+
+extract_metrics_snail_mov <- function(hrv_obj, id) {
+  if (!is.null(hrv_obj$TimeAnalysis[[1]])) {
+    ta <- hrv_obj$TimeAnalysis[[1]] 
+    fa <- hrv_obj$FreqAnalysis[[1]]  
+    data.frame(
+      ID = id,
+      MeanHR_mov = mean(hrv_obj$HR, na.rm = TRUE),
+      LF_mov = mean(fa$LF),
+      HF_mov = mean(fa$HF),
+      LFHF_mov = mean(fa$LFHF),
+      SDNN_mov = ta$SDNN,
+      RMSSD_mov = ta$rMSSD,
+      pNN50_mov = ta$pNN50,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      ID = id,
+      MeanHR_mov = NA,
+      LF_mov = NA,
+      HF_mov = NA,
+      LFHF_mov = NA,
+      SDNN_mov = NA,
+      RMSSD_mov = NA,
+      pNN50_mov = NA,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+grouped <- all_mov_valleys %>% group_by(ID)
+data_by_snail_mov <- grouped %>% group_split()
+Real_IDs <- grouped %>% group_keys() %>% pull(1)
+results_HRV_mov<- lapply(data_by_snail_mov, function(df_snail) {
+  HRV <- CreateHRVData()
+  HRV <- LoadBeatVector(HRV, df_snail$time)
+  HRV <- BuildNIHR(HRV)
+  HRV <- InterpolateNIHR(HRV)
+  HRV <- CreateTimeAnalysis(HRV, size = 80, interval = 7.8125)
+  HRV <- CreateFreqAnalysis(HRV)
+  HRV <- CalculatePowerBand(HRV, size = 80, shift = 5, type = "wavelet" )
+  return(HRV)
+})
+
+names(results_HRV_mov) <- as.character(Real_IDs)
+HRV_metrics_mov<- imap_dfr(results_HRV_mov, ~ extract_metrics_snail_mov(.x, .y))
+view(HRV_metrics_mov)
+
+
+HRV_all_metrics <- left_join(HRV_metrics_mov, HRV_metrics_rep, by = "ID")
+
+
+HRV_all_metrics$LF_rep_norm <- HRV_all_metrics$LF_rep / (HRV_all_metrics$LF_rep + HRV_all_metrics$HF_rep) * 100
+HRV_all_metrics$LF_mov_norm <- HRV_all_metrics$LF_mov / (HRV_all_metrics$LF_mov + HRV_all_metrics$HF_mov) * 100
+
+
+HRV_all_metrics$HF_rep_norm <- HRV_all_metrics$HF_rep / (HRV_all_metrics$LF_rep + HRV_all_metrics$HF_rep) * 100
+HRV_all_metrics$HF_mov_norm <- HRV_all_metrics$HF_mov / (HRV_all_metrics$LF_mov + HRV_all_metrics$HF_mov) * 100
+
+view(HRV_all_metrics)
+write_xlsx(HRV_all_metrics, "HRV_all_metrics.xlsx")
+
+###########################################################################################################################
+
+
+
+
+
+
+
+
+```
