@@ -1,0 +1,943 @@
+---
+title: "Heart rate and HRV analysis"
+author: "E. Alejandro Pardo"
+date: "2025-08-10"
+output: html_document
+---
+```{r}
+library(tidyverse)
+library(dplyr)
+library(RHRV)
+library(readxl)
+library(ggplot2)
+
+setwd("C:/Users/jandr/OneDrive - Universidad del rosario/Heart_rate_speed_HRV/Datos")
+list.files()
+body_size <- read_xlsx("Pardo-Sarmiento et al, cornu aspersum.xlsx",sheet = "Body_size")
+
+
+setwd("C:/Users/jandr/OneDrive - Universidad del rosario/Heart_rate_speed_HRV/Datos")
+list.files()
+Valleys <- read_xlsx("Pardo-Sarmiento et al, cornu aspersum.xlsx",sheet = "Valleys(systole)")
+Valleys_immobilized <- Valleys %>% dplyr::filter(state == "immobilized")
+Valleys_moving <- Valleys %>% dplyr::filter(state == "Moving")
+
+grouped <- Valleys_moving %>% group_by(ID)
+data_by_snail <- grouped %>% group_split()
+real_ids <- grouped %>% group_keys() %>% pull(1)
+results_HRV_mov <- lapply(data_by_snail, function(df_snail) {
+  HRV <- CreateHRVData()
+  HRV <- LoadBeatVector(HRV, df_snail$time)
+  HRV <- BuildNIHR(HRV)
+  HRV <- InterpolateNIHR(HRV)
+  HRV <- CreateTimeAnalysis(HRV, size = 80, interval = 7.8125)
+  HRV <- CreateFreqAnalysis(HRV)
+  HRV <- CalculatePowerBand(HRV, size = 80, shift = 5, type = "wavelet" )
+  return(HRV)
+})
+names(results_HRV_mov) <- real_ids
+
+extract_metrics_snail_mov <- function(hrv_obj, id) {
+  if (!is.null(hrv_obj$TimeAnalysis[[1]])) {
+    ta <- hrv_obj$TimeAnalysis[[1]] 
+    fa <- hrv_obj$FreqAnalysis[[1]] 
+     RR_ms <- hrv_obj$Beat 
+     data.frame(
+      ID = id,
+      MeanHR_mov = mean(hrv_obj$HR, na.rm = TRUE),
+      LF_mov = mean(fa$LF),
+      HF_mov = mean(fa$HF),
+      LFHF_mov = mean(fa$LFHF),
+      SDNN_mov = ta$SDNN,
+      RMSSD_mov = ta$rMSSD,
+      pNN50_mov = ta$pNN50,
+      RRms = mean(RR_ms$RR), 
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      ID = id,
+      MeanHR_mov = NA,
+      LF_mov = NA,
+      HF_mov = NA,
+      LFHF_mov = NA,
+      SDNN_mov = NA,
+      RMSSD_mov = NA,
+      pNN50_mov = NA,
+      RRms = NA,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+Metrics_moving <- imap_dfr(results_HRV_mov, ~ extract_metrics_snail_mov(.x, .y))
+
+Metrics_moving$LFnorm_mov <- Metrics_moving$LF_mov / (Metrics_moving$LF_mov + Metrics_moving$HF_mov) * 100
+
+Metrics_moving$HFnorm_mov <- Metrics_moving$HF_mov / (Metrics_moving$LF_mov + Metrics_moving$HF_mov) * 100
+
+view(Metrics_moving)
+############################################################################
+
+grouped <- Valleys_immobilized %>% group_by(ID)
+data_by_snail_rep <- grouped %>% group_split()
+real_ids <- grouped %>% group_keys() %>% pull(1)
+results_HRV_rep <- lapply(data_by_snail_rep, function(df_snail) {
+  HRV <- CreateHRVData()
+  HRV <- LoadBeatVector(HRV, df_snail$time)
+  HRV <- BuildNIHR(HRV)
+  HRV <- InterpolateNIHR(HRV)
+  HRV <- CreateTimeAnalysis(HRV, size = 80, interval = 7.8125)
+  HRV <- CreateFreqAnalysis(HRV)
+  HRV <- CalculatePowerBand(HRV, size = 80, shift = 5, type = "wavelet" )
+  HRV <- CreateNonLinearAnalysis(HRV)
+  return(HRV)})
+names(results_HRV_rep) <- real_ids
+
+
+
+
+extract_metrics_snail_rep <- function(hrv_obj, id) {
+  if (!is.null(hrv_obj$TimeAnalysis[[1]])) {
+    ta <- hrv_obj$TimeAnalysis[[1]]  
+    fa <- hrv_obj$FreqAnalysis[[1]]
+    RR_ms <- hrv_obj$Beat
+    data.frame(
+      ID = id,
+      MeanHR_rep = mean(hrv_obj$HR, na.rm = TRUE),
+      LF_rep = mean(fa$LF),
+      HF_rep = mean(fa$HF),
+      LFHF_rep = mean(fa$LFHF),
+      SDNN_rep = ta$SDNN,
+      RMSSD_rep = ta$rMSSD,
+      pNN50_rep = ta$pNN100,
+      RRms = mean(RR_ms$RR),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      ID = id,
+      MeanHR_rep = NA,
+      LF_rep = NA,
+      HF_rep = NA,
+      LFHF_rep = NA,
+      SDNN_rep = NA,
+      RMSSD_rep = NA,
+      pNN50_rep = NA,
+      RRms = NA,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+metrics_immobilized <- imap_dfr(results_HRV_rep, ~ extract_metrics_snail_rep(.x, .y))
+
+
+metrics_immobilized$LFnorm_rep <- metrics_immobilized$LF_rep / (metrics_immobilized$LF_rep + metrics_immobilized$HF_rep) * 100
+
+metrics_immobilized$HFnorm_rep <- metrics_immobilized$HF_rep / (metrics_immobilized$LF_rep + metrics_immobilized$HF_rep) * 100
+
+view(metrics_immobilized)
+
+
+metrics_all <- body_size %>%
+  mutate(Snail = as.character(Snail)) %>%
+  left_join(
+    metrics_immobilized %>% mutate(ID = as.character(ID)),
+   by = c("Snail" = "ID"),
+  )  %>%  
+  left_join(
+    Metrics_moving %>% mutate(ID = as.character(ID)),
+    by = c("Snail" = "ID"),
+    suffix = c("_rep", "_mov")) %>% 
+  dplyr::filter(!is.na(MeanHR_mov) & !is.na(MeanHR_rep))
+ metrics_all$totalpower_rep <- metrics_all$LF_rep + metrics_all$HF_rep
+ metrics_all$totalpower_mov <- metrics_all$LF_mov + metrics_all$HF_mov
+
+View(metrics_all)
+write_xlsx(metrics_all, "data_all_snails_HRV.xlsx")
+large_metrics_all <-  metrics_all %>% 
+  mutate(across(where(is.character), ~as.numeric(.))) %>%
+  pivot_longer(
+    cols = c(MeanHR_rep, MeanHR_mov, RMSSD_rep, RMSSD_mov, pNN50_rep, pNN50_mov, SDNN_rep, SDNN_mov, LF_rep, LF_mov, HF_rep, HF_mov, LFHF_rep, LFHF_mov, LFnorm_rep, LFnorm_mov, HFnorm_rep, HFnorm_mov, totalpower_mov, totalpower_rep, RRms_mov, RRms_rep),
+    names_to = c(".value", "condition"),
+    names_sep = "_"
+  ) 
+power_wide <- large_metrics_all %>%
+  dplyr::filter(!is.na(totalpower)) %>%
+  select(Snail, condition, totalpower) %>%
+  pivot_wider(names_from = condition, values_from = totalpower)
+IQR(rmssd_wide$rep)
+IQR(rmssd_wide$mov)
+####################################################3
+view(large_metrics_all)
+rmssd_wide <- large_metrics_all %>%
+  dplyr::filter(!is.na(RMSSD)) %>%
+  select(Snail, condition, RMSSD) %>%
+  pivot_wider(names_from = condition, values_from = RMSSD)
+IQR(rmssd_wide$rep)
+IQR(rmssd_wide$mov)
+
+nrow(large_metrics_all)
+wilcox.test(rmssd_wide$rep, rmssd_wide$mov, paired = TRUE)
+shapiro.test(rmssd_wide$rep)
+shapiro.test(rmssd_wide$mov)
+C.i.(rmssd_wide$rep)
+C.i.(rmssd_wide$mov)
+########################################################
+
+MeanHR_r <- large_metrics_all %>%
+  dplyr::filter(!is.na(MeanHR)) %>%
+  select(Snail, condition, MeanHR) %>%
+  pivot_wider(names_from = condition, values_from = MeanHR)
+
+wilcox.test(MeanHR_r$rep, MeanHR_r$mov, paired = TRUE)
+t.test(MeanHR_r$rep, MeanHR_r$mov, paired = TRUE)
+
+shapiro.test(MeanHR_r$rep)###Normal
+shapiro.test(MeanHR_r$mov)###Normal
+C.i.(MeanHR_r$rep)
+IQR(MeanHR_r$rep)
+
+C.i.(MeanHR_r$mov)
+sd(MeanHR_r$rep)
+IQR(MeanHR_r$mov)
+
+sd(MeanHR_r$mov)
+mean(MeanHR_r$mov/MeanHR_r$rep)
+sd(MeanHR_r$mov/MeanHR_r$rep)
+
+
+MeanHR_r$max_min <- abs(MeanHR_r$mov - MeanHR_r$rep)
+shapiro.test(MeanHR_r$max_min)###Normal
+C.i.(MeanHR_r$max_min)
+############################################################################
+pNN50_r <- large_metrics_all %>%
+  dplyr::filter(!is.na(pNN50)) %>%
+  select(Snail, condition, pNN50) %>%
+  pivot_wider(names_from = condition, values_from = pNN50)
+
+t.test(pNN50_r$rep, pNN50_r$mov, paired = TRUE)
+shapiro.test(pNN50_r$rep)###Normal
+shapiro.test(pNN50_r$mov)###Normal
+C.i.(pNN50_r$rep)
+C.i.(pNN50_r$mov)
+sd(pNN50_r$rep)   
+IQR(pNN50_r$rep)
+IQR(pNN50_r$mov)
+
+sd(pNN50_r$mov)   
+ 
+SDNN_r <- large_metrics_all %>%
+  dplyr::filter(!is.na(SDNN)) %>%
+  select(Snail, condition, SDNN) %>%
+  pivot_wider(names_from = condition, values_from = SDNN)
+IQR(SDNN_r$rep)
+IQR(SDNN_r$mov)
+
+wilcox.test(SDNN_r$rep, SDNN_r$mov, paired = TRUE)
+shapiro.test(SDNN_r$rep)
+shapiro.test(SDNN_r$mov)
+C.i.(SDNN_r$rep)
+C.i.(SDNN_r$mov)
+
+##########################################################################
+LF_R <- large_metrics_all %>%
+  dplyr::filter(!is.na(LF)) %>%
+  select(Snail, condition, LF) %>%
+  pivot_wider(names_from = condition, values_from = LF)
+
+wilcox.test(LF_R$rep, LF_R$mov, paired = TRUE)
+shapiro.test(LF_R$rep)
+shapiro.test(LF_R$mov)
+C.i.(LF_R$rep)
+C.i.(LF_R$mov)
+                                     
+LF_norm <- large_metrics_all %>%
+  dplyr::filter(!is.na(LFnorm)) %>%
+  select(Snail, condition, LFnorm) %>%
+  pivot_wider(names_from = condition, values_from = LFnorm)
+IQR(LF_norm$rep)
+IQR(LF_norm$mov)
+
+t.test(LF_norm$rep, LF_norm$mov, paired = TRUE)
+shapiro.test(LF_norm$rep)#normal
+shapiro.test(LF_norm$mov)#normal
+C.i.(LF_norm$rep)
+C.i.(LF_norm$mov)
+
+#############################################################################3
+HF_R <- large_metrics_all %>%
+  dplyr::filter(!is.na(HF)) %>%
+  select(Snail, condition, HF) %>%
+  pivot_wider(names_from = condition, values_from = HF)
+
+wilcox.test(HF_R$rep, HF_R$mov, paired = TRUE)
+shapiro.test(HF_R$rep)
+shapiro.test(HF_R$mov)
+C.i.(HF_R$rep)
+C.i.(HF_R$mov)
+
+HF_norm <- large_metrics_all %>%
+  dplyr::filter(!is.na(HFnorm)) %>%
+  select(Snail, condition, HFnorm) %>%
+  pivot_wider(names_from = condition, values_from = HFnorm)
+IQR(HF_norm$rep)
+IQR(HF_norm$mov)
+
+t.test(HF_norm$rep, HF_norm$mov, paired = TRUE)
+shapiro.test(HF_norm$rep)#normal
+shapiro.test(HF_norm$mov)#normal
+C.i.(HF_norm$rep)
+C.i.(HF_norm$mov)
+
+################################################################
+LFHF_R <- large_metrics_all %>%
+  dplyr::filter(!is.na(LFHF)) %>%
+  select(Snail, condition, LFHF) %>%
+  pivot_wider(names_from = condition, values_from = LFHF)
+
+wilcox.test(LFHF_R$rep, LFHF_R$mov, paired = TRUE)
+t.test(LFHF_R$rep, LFHF_R$mov, paired = TRUE)
+shapiro.test(LFHF_R$rep)#normal
+shapiro.test(LFHF_R$mov)#normal
+C.i.(LFHF_R$rep)
+C.i.(LFHF_R$mov)
+mean(LFHF_R$rep)
+mean(LFHF_R$mov)+
+sd(LFHF_R$rep)
+sd(LFHF_R$mov)
+IQR(LFHF_R$rep)
+IQR(LFHF_R$mov)
+
+#############################################################################
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggrepel)
+library(ggplot2)
+library(ggrepel)
+library(readxl)
+############################################################################################################################3
+ggplot(large_metrics_all, aes(x=large_metrics_all$condition, y=LFHF))+ geom_boxplot()
+
+Data_HRV <- metrics_all %>%
+  mutate(
+    Delta_RR =  RRms_mov - RRms_rep,
+    Delta_MeanHR = MeanHR_mov - MeanHR_rep,
+    Delta_RMSSD = RMSSD_mov - RMSSD_rep,
+    Delta_pNN50 = pNN50_mov - pNN50_rep,
+    Delta_SDNN = SDNN_mov - SDNN_rep,
+    Delta_LFHF = LFHF_mov - LFHF_rep,
+    Delta_LFnorm = LFnorm_mov - LFnorm_rep,
+    Delta_HFnorm = HFnorm_mov - HFnorm_rep,
+    Delta_power = total_power_mov - total_power_rep
+
+      )
+
+long_HR <- Data_HRV %>%
+  select(Delta_MeanHR) %>%
+  pivot_longer(cols = everything(),
+               names_to = "Metrica",
+               values_to = "Cambio") %>%
+  mutate(Metrica = gsub("Delta_", "", Metrica),
+         Tipo = "HR")
+
+long_HRV <- Data_HRV %>%
+  select(starts_with("Delta_")) %>%
+  pivot_longer(cols = everything(),
+               names_to = "Metrica",
+               values_to = "Cambio") %>%
+  mutate(Metrica = gsub("Delta_", "", Metrica),
+         Tipo = "HRV")
+
+# Paso 3: Combinar en un solo dataframe
+Datos_combinados <- bind_rows(long_HR, long_HRV)
+large_metrics_all$Snail <- as.factor(large_metrics_all$Snail) # asegurar factor
+
+# Filtrar solo la primera condición de cada individuo
+etiquetas <- large_metrics_all %>%
+  group_by(Snail) %>%
+  slice_min(order_by = condition, n = 1) %>%
+  ungroup()
+library(ggrepel)
+large_metrics_all$condition <- factor(
+  large_metrics_all$condition,
+  levels = c("rep", "mov")
+)
+
+
+HR <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = MeanHR, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = MeanHR,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = MeanHR, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = MeanHR,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+
+RMSSD <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = RMSSD, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = RMSSD,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = RMSSD, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = RMSSD,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+
+SDNN <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = SDNN, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = SDNN,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = SDNN, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = SDNN,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+
+pNN50 <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = pNN50, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = pNN50,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = pNN50, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = pNN50,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+RRs <-  ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = RRms, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = RRms,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = RRms, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = RRms,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+LFHF <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = LFHF, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = LFHF,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = LFHF, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = LFHF,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+large_metrics_all$RRms
+
+totalpower <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = totalpower, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = totalpower,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = totalpower, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = totalpower,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+LF <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = LFnorm, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = LFnorm,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = LFnorm, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = LFnorm,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+
+HF <- ggplot(large_metrics_all,
+) +  geom_violin(aes(
+  x = condition,
+  y = HFnorm, fill = condition)) + geom_point(aes(
+  x = condition,
+  y = HFnorm,
+  group = Snail), size = 2) + geom_boxplot(aes(
+  x = condition,
+  y = HFnorm, fill = condition), width = 0.2, outlier.shape = NA, alpha = 0.5) +
+    geom_line(aes(
+  x = condition,
+  y = HFnorm,
+  group = Snail),size = 0.5)+
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Comparación entre estados por individuo",
+    x = "Estado",
+    y = "Frecuencia cardíaca media"
+  ) +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323"))+ theme(
+    axis.line.y.right = element_line(color = "black", size = 0.8),
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x = element_line(color = "black", size = 0.8),
+    axis.line.y = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+
+
+
+
+Plot_HR <- long_HRV %>%
+  dplyr::filter(Metrica == c("pNN50")) %>%
+  ggplot(aes(x = Metrica, y = Cambio, fill = Tipo)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#1f78b4") +
+  stat_summary(fun = mean, geom = "col", width = 0.4, color = "black", alpha = 0.9) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, color = "black") +
+  geom_jitter(aes(color = Tipo), width = 0.1, size = 2, alpha = 0.5) +
+  scale_fill_manual(values = c(HRV = "#1f78b4")) +
+  scale_color_manual(values = c(HRV = "#1f78b4")) +theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) +
+  labs(
+    title = "Cambio en frecuencia cardíaca",
+    x = NULL,
+    y = "Δ pNN50 (%)"
+  ) +
+  theme(legend.position = "none")+
+  coord_flip() +
+  theme(legend.position = "none")
+
+plot_time <- long_HRV %>%
+  dplyr::filter(Metrica %in% c("RMSSD", "SDNN", "RR")) %>%
+  ggplot(aes(x = reorder(Metrica, Cambio), y = Cambio, fill = Tipo)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  stat_summary(fun = mean, geom = "col", width = 0.6, color = "black", alpha = 0.9) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, color = "black") +
+  geom_jitter(aes(color = Tipo), width = 0.15, size = 1.8, alpha = 0.5) +
+  scale_fill_manual(values = c(HRV = "#1f78b4")) +
+  scale_color_manual(values = c(HRV = "#1f78b4")) +
+  coord_flip() +theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3))  +
+  labs(
+    title = "Cambio en análisis temporal (HRV)",
+    x = "Métrica",
+    y = "Δ Valor"
+  ) +
+  theme(legend.position = "none")
+
+
+plot_freq <- long_HRV %>%
+  dplyr::filter(Metrica %in% c("LFHF", "LFnorm", "HFnorm")) %>%
+  ggplot(aes(x = reorder(Metrica, Cambio), y = Cambio, fill = Tipo)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  stat_summary(fun = mean, geom = "col", width = 0.6, color = "black", alpha = 0.9) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, color = "black") +
+  geom_jitter(aes(color = Tipo), width = 0.15, size = 1.8, alpha = 0.5) +
+  scale_fill_manual(values = c(HRV = "#e31a1c")) +
+  scale_color_manual(values = c(HRV = "#e31a1c")) +
+  coord_flip() +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) +  labs(
+    title = "Cambio en análisis de frecuencia (HRV)",
+    x = "Métrica",
+    y = "Δ Valor"
+  ) +
+  theme(legend.position = "none")
+#################################################################################################3
+# Cargar paquetes
+library(dplyr)
+library(broom)
+
+# Función para evaluar normalidad y aplicar prueba adecuada
+analisis_variable <- function(rep, mov, nombre_var, data) {
+  diferencia <- data[[mov]] - data[[rep]]
+  # Test de normalidad
+  shapiro <- shapiro.test(diferencia)
+  normal <- shapiro$p.value > 0.05
+  
+  if (normal) {
+    test <- t.test(data[[mov]], data[[rep]], paired = TRUE)
+    tipo <- "t pareada"
+  } else {
+    test <- wilcox.test(data[[mov]], data[[rep]], paired = TRUE)
+    tipo <- "Wilcoxon"
+  }
+  
+  tibble(
+    Variable = nombre_var,
+    Media_cambio = mean(diferencia, na.rm = TRUE),
+    Prueba = tipo,
+    Normalidad_p = round(shapiro$p.value, 4),
+    p_valor = round(test$p.value, 4)
+  )
+}
+
+# HR: en Data_HRV
+res_HR <- analisis_variable("MeanHR_rep", "MeanHR_mov", "MeanHR", Data_HRV)
+
+# HRV: en Data_HRV_fil
+res_RMSSD <- analisis_variable("RMSSD_rep", "RMSSD_mov", "RMSSD", Data_HRV_fil)
+res_pNN50 <- analisis_variable("pNN50_rep", "pNN50_mov", "pNN50", Data_HRV_fil)
+res_SDNN  <- analisis_variable("SDNN_rep", "SDNN_mov", "SDNN", Data_HRV_fil)
+res_LFHF  <- analisis_variable("LFHF_rep", "LFHF_mov", "LFHF", Data_HRV_fil)
+res_LFnorm <- analisis_variable("LFnorm_rep", "LFnorm_mov", "LFnorm", Data_HRV_fil)
+res_HFnorm <- analisis_variable("HFnorm_rep", "HFnorm_mov", "HFnorm", Data_HRV_fil)
+
+# Juntar todos los resultados
+resultados_estadisticos <- bind_rows(
+  res_HR,
+  res_RMSSD,
+  res_pNN50,
+  res_SDNN,
+  res_LFHF,
+  res_LFnorm,
+  res_HFnorm
+)
+
+# Ver resultados
+print(resultados_estadisticos)
+
+
+
+
+
+##########################################################################################333
+ggplot(datos_plot, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(trim = FALSE, fill = "lightblue", alpha = 0.5) +
+  geom_point(aes(color = Snail), position = position_jitter(width = 0.05), size = 2) +
+  geom_line(aes(group = Snail, color = Snail), alpha = 0.4) +
+  theme_minimal()
+
+ggplot(datos_plot, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.2) +
+  geom_line(aes(group = Snail), color = "gray70", alpha = 0.5) +
+    geom_text(aes(label=Snail))+
+
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  scale_color_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3)) 
+########################################################################################################################################33333
+
+datos_plot_HR <- datos_largos %>%
+  pivot_longer(cols = c(MeanHR),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov")))
+
+ggplot(datos_plot_HR, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.1) +
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  scale_color_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+#################################################################################################################################################
+datos_plot_RMSSD <- datos_largos %>%
+  pivot_longer(cols = c(RMSSD),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov")))
+
+ggplot(datos_plot_RMSSD, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_text(aes(label = Snail))+
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  scale_color_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+  
+#################################################################################################################################################
+datos_plot_SDNN <- datos_largos %>%
+  pivot_longer(cols = c(SDNN),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov")))
+
+ggplot(datos_plot_SDNN, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  geom_text(aes(label=Snail))+
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  scale_color_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+############################################################################################33e
+datos_plot_pNN50 <- datos_largos %>%
+  pivot_longer(cols = c(pNN50),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov")))
+
+ggplot(datos_plot_pNN50, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  scale_color_manual(values = c("rep" = "#1f78b4", "mov" = "#e31a1c")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+############################################################################################33e
+datos_plot_LF_norm <- datos_largos %>%
+  pivot_longer(cols = c(LFnorm),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov"))) %>%  dplyr::filter(Snail!=12)
+
+ggplot(datos_plot_LF_norm, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+
+############################################################################################33e
+datos_plot_HF_norm <- datos_largos %>%
+  pivot_longer(cols = c(HFnorm),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov"))) #%>%  dplyr::filter(Snail!=12)
+
+ggplot(datos_plot_HF_norm, aes(x = condición, y = Valor, fill = condición)) +
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+############################################################################################33e
+datos_plot_LFHF <- datos_largos_fil %>%
+  pivot_longer(cols = c(LFHF),
+               names_to = "Parámetro",
+               values_to = "Valor") %>%
+  mutate(condición = factor(condición, levels = c("rep", "mov"))) #%>%  dplyr::filter(Snail!=12)
+
+ggplot(datos_plot_LFHF, aes(x = condición, y = Valor, fill = condición)) +
+  geom_text(aes(label = Snail))+
+  geom_violin(alpha = 0.2, color = NA) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  geom_point(aes(color = condición), position = position_jitter(width = 0.1), size = 2, alpha = 0.7) +
+   facet_wrap(~Parámetro, scales = "free_y") +
+  scale_fill_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  scale_color_manual(values = c("rep" = "#659794", "mov" = "#AB8323")) +
+  labs(
+    title = "Comparación de parámetros de HRV por condición",
+    x = "Condición",
+    y = "Valor"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.line.x.bottom = element_line(color = "black", size = 0.8),
+    axis.line.y.left = element_line(color = "black", size = 0.8), panel.grid.major = element_line(color = "black", linetype = "dotted", size = 0.3), legend.position = "top") 
+```
